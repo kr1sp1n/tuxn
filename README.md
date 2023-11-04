@@ -2,10 +2,14 @@
 
 Implementation of [uxn][1] in tcl/tk.
 
-Download [tclkit][2] for your platform and make it executable.
+Download [tclkit][2] for your platform with the Tk package and make it executable.
 
-Then run a uxn rom:
+Build rom:
+```bash
+uxnasm test/hello-pixel.tal test/hello-pixel.rom
+```
 
+Run rom:
 ```bash
 tclkit src/emu.tcl test/hello-pixel.rom
 ```
