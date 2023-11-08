@@ -1,6 +1,7 @@
 package require Tcl 8.5
 package provide uxn 1.0
-# package require stack 1.0
+
+# puts [::tcl::unsupported::representation $ram]
 
 namespace eval ::uxn {
   # Export all:
@@ -24,10 +25,6 @@ namespace eval ::uxn {
   variable rst_offset [expr 0x11000]
   variable device_offset [ expr 0x12000 ]
 
-  # Default screen size:
-  variable screen_width 512
-  variable screen_height 320
-
   # Loaded program:
   variable program
 
@@ -50,6 +47,7 @@ namespace eval ::uxn {
   variable dst
   
   variable stack_offsets
+  variable stack_pks
 
   # Save device callbacks by ports:
   variable device_callbacks
@@ -109,23 +107,6 @@ namespace eval ::uxn {
 
 }
 
-# handle opcodes:
-# proc ::uxn::handle { opcode bodies } {
-#   variable opcodes
-
-#   set name [lindex $opcodes $opcode]
-#   set name_index [lsearch $bodies $name]
-
-#   if { $name_index != -1 } {
-#     set body_index [expr $name_index + 1]
-#     puts "$name $name_index $body_index"
-#     # Generate procedure:
-#     proc "::uxn::$name" {} [lindex $bodies $body_index]
-#     # Execute:
-#     ::uxn::$name
-#   }
-# }
-
 proc ::uxn::set_debug {val} {
   variable debug
   set debug $val
@@ -146,6 +127,7 @@ proc ::uxn::log {message} {
 proc ::uxn::stack_create {name offset} {
   variable stack_offsets
   set stack_offsets($name) $offset
+  set stack_pks($name) 0
   log "stack $name: $offset - [expr $offset + 255]"
   return $name
 }
@@ -156,6 +138,12 @@ proc ::uxn::stack_offset {name} {
   return $stack_offsets($name)
 }
 
+# Get pk of a stack:
+proc ::uxn::stack_pk {name} {
+  variable stack_pks
+  return $stack_pks($name)
+}
+
 proc ::uxn::stack_peek {name index} {
   variable ram
   return [lindex $ram [expr [stack_offset $name] + $index]]
@@ -164,6 +152,12 @@ proc ::uxn::stack_peek {name index} {
 # Get content of stack ptr:
 proc ::uxn::stack_ptr {name} {
   return [stack_peek $name 0xff]
+}
+
+# Set content of stack pk:
+proc ::uxn::stack_pk_set {name val} {
+  variable stack_pks
+  set stack_pks($name) $val
 }
 
 proc ::uxn::stack_inc {name} {
@@ -177,7 +171,10 @@ proc ::uxn::stack_inc {name} {
 proc ::uxn::stack_dec {name} {
   variable mode_k
   if ($mode_k) {
-    return 
+    set old_pk [stack_pk $name]
+    set new_pk [expr $old_pk - 1]
+    stack_pk_set $name $new_pk
+    return $new_pk
     # TODO:
     # --this.pk
   } else {
@@ -266,7 +263,7 @@ proc ::uxn::device_peek16 {port} {
   return [expr ([device_peek8 $port] << 8) + [device_peek8 [expr $port + 1]]]
 }
 
-# Set value for port and callback device handler:
+# Set value for port and call back device handler:
 proc ::uxn::device_poke {port val} {
   variable mode_2
 
@@ -291,19 +288,9 @@ proc ::uxn::device_poke16 {port val} {
 
 # 
 # DEVICE PROCEDURE END
-# 
+#
 
-proc ::uxn::screen_get_width {} {
-  variable screen_width
-  return $screen_width
-}
-
-proc ::uxn::screen_get_height {} {
-  variable screen_height
-  return $screen_height
-}
-
-# TODO
+# TODO:
 proc ::uxn::halt {err} {
   # let vec = peek16(emu.uxn.dev, 0)
   # if(vec)
@@ -351,20 +338,16 @@ proc ::uxn::init {} {
   variable wst_offset
   variable rst_offset
   variable ram
-  variable screen_width
-  variable screen_height
   
   # Working stack:
   stack_create wst $wst_offset
   # Return stack:
   stack_create rst $rst_offset
 
-  device_poke16 [expr 0x22] $screen_width
-  device_poke16 [expr 0x24] $screen_height
-
   log "ram size: [llength $ram]"
 }
 
+# Load list of integers:
 proc ::uxn::load { rom } {
   variable ram
   variable program
@@ -450,7 +433,7 @@ proc ::uxn::rel {val} {
 proc ::uxn::jump {addr pc} {
   variable mode_2
   set x $addr
-  if { !mode_2 } {
+  if { !$mode_2 } {
     set x [expr $pc + [rel $addr]]
   }
   return [expr $x & 0xffff]
@@ -462,11 +445,10 @@ proc ::uxn::move { distance pc } {
 
 proc ::uxn::callback {port val} {
   variable device_callbacks
-  variable system_colors
 
   set device "[format %02x [expr $port & 0xf0]]"
   
-  log "DEV: $device PORT: [format %02x $port] VAL: [format %02x $val]"
+  # log "DEV: $device PORT: [format %02x $port] VAL: [format %02x $val]"
   
   # variable dev
   # for {set i 0} {$i < 255} {incr i} {
@@ -496,7 +478,7 @@ proc ::uxn::callback {port val} {
       default { apply $callback $val }
     }
   } else {
-    log "No callback for port [format %.2x $port] with val: [format %.4x $val]"
+    # log "No callback for port [format %.2x $port] with val: [format %.4x $val]"
   } 
 }
 
@@ -528,10 +510,9 @@ proc ::uxn::eval { pc } {
     set mode_r [expr $opcode & 0x40]
     set mode_k [expr $opcode & 0x80]
 
-    # ???
     if { $mode_k } {
-      # this.wst.pk = this.wst.ptr()
-      # this.rst.pk = this.rst.ptr()
+      stack_pk_set wst [stack_ptr wst]
+      stack_pk_set rst [stack_ptr rst]
     }
 
     if { $mode_r } {
@@ -543,27 +524,85 @@ proc ::uxn::eval { pc } {
     }
 
     set name [ opcode_name $opcode ]
-    
     log "0x[format %02x $opcode] 0b[format %08b $opcode] [format %d $opcode] $name"
 
     switch $name {
+      # Literals/Calls:
       BRK { return 1 }
-      STZ -
-      STZ2 { poke [stack_pop8 $src] [pop] }
       JCI { if { ![stack_pop8 $src] } { set pc [move 2 $pc] } }
+      JMI { set pc [move [expr [peek16 $pc] + 2] $pc] }
       JSI { stack_push16 rst [expr $pc + 2]; set pc [move [expr [peek16 $pc] + 2] $pc] }
-      INC -
-      INC2 { push [ expr [pop] + 1 ] }
-      DEI -
-      DEI2 { push [device_peek [stack_pop8 $src]] }
-      DEO -
-      DEO2 { device_poke [stack_pop8 $src] [pop] }
-      LIT -
-      LIT2 -
-      LITr -
-      LIT2r { push [peek $pc]; set pc [move [expr !!$mode_2 + 1] $pc] }
-      SFT -
-      SFT2 { set a [stack_pop8 $src]; set b [pop]; push [expr $b >> ($a & 0x0f) << (($a & 0xf0) >> 4)] }
+      LIT - LIT2 - LITr - LIT2r - LITk - LIT2k - LITkr - LIT2kr
+      { 
+        puts [peek $pc]
+        push [peek $pc]; set pc [move [expr !!$mode_2 + 1] $pc]
+      }
+      # Stack:
+      INC - INC2 - INCr - INC2r - INCk - INC2k - INCkr - INC2kr
+       { push [expr [pop] + 1] }
+      POP - POP2 - POPr - POP2r - POPk - POP2k - POPkr - POP2kr
+      { pop }
+      NIP - NIP2 - NIPr - NIP2r - NIPk - NIP2k - NIPkr - NIP2kr
+      { set a [pop]; pop; push $a }
+      SWP - SWP2 - SWPr - SWP2r - SWPk - SWP2k - SWPkr - SWP2kr
+      { set a [pop]; set b [pop]; push $a; push $b }
+      ROT - ROT2 - ROTr - ROT2r - ROTk - ROT2k - ROTkr - ROT2kr
+      { set a [pop]; set b [pop]; set c [pop]; push $b; push $a; push $c }
+      DUP - DUP2 - DUPr - DUP2r - DUPk - DUP2k - DUPkr - DUP2kr
+      { set a [pop]; push $a; push $a }
+      OVR - OVR2 - OVRr - OVR2r - OVRk - OVR2k - OVRkr - OVR2kr
+      { set a [pop]; set b [pop]; push $b; push $a; push $b }
+      # Logic:
+      EQU - EQU2 - EQUr - EQU2r - EQUk - EQU2k - EQUkr - EQU2kr
+      { set a [pop]; set b [pop]; push8 [expr $b == $a] }
+      NEQ - NEQ2 - NEQr - NEQ2r - NEQk - NEQ2k - NEQkr - NEQ2kr
+      { set a [pop]; set b [pop]; push8 [expr $b != $a] }
+      GTH - GTH2 - GTHr - GTH2r - GTHk - GTH2k - GTHkr - GTH2kr
+      { set a [pop]; set b [pop]; push8 [expr $b > $a] }
+      LTH - LTH2 - LTHr - LTH2r - LTHk - LTH2k - LTHkr - LTH2kr
+      { set a [pop]; set b [pop]; push8 [expr $b < $a] }
+      JMP - JMP2 - JMPr - JMP2r - JMPk - JMP2k - JMPkr - JMP2kr
+      { set pc [jump [pop] $pc] }
+      JCN - JCN2 - JCNr - JCN2r - JCNk - JCN2k - JCNkr - JCN2kr
+      { set a [pop]; if {[stack_pop8 $src]} {set pc [jump $a $pc]} }
+      JSR - JSR2 - JSRr - JSR2r - JSRk - JSR2k - JSRkr - JSR2kr
+      { stack_push16 $dst $pc; set pc [jump [pop] $pc] }
+      STH - STH2 - STHr - STH2r - STHk - STH2k - STHkr - STH2kr
+      { if {$mode_2} { stack_push16 $dst [stack_pop16 $src] } else { stack_push8 $dst [stack_pop8 $src] } }
+      # Memory:
+      LDZ - LDZ2 - LDZr - LDZ2r - LDZk - LDZ2k - LDZkr - LDZ2kr
+      { push [peek [stack_pop8 $src]] }
+      STZ - STZ2 - STZr - STZ2r - STZk - STZ2k - STZkr - STZ2kr
+      { poke [stack_pop8 $src] [pop] }
+      LDR - LDR2 - LDRr - LDR2r - LDRk - LDR2k - LDRkr - LDR2kr
+      { push [peek [expr $pc + [rel [stack_pop8 $src]]]] }
+      STR - STR2 - STRr - STR2r - STRk - STR2k - STRkr - STR2kr
+      { poke [expr $pc + [rel [stack_pop8 $src]]] [pop] }
+      LDA - LDA2 - LDAr - LDA2r - LDAk - LDA2k - LDAkr - LDA2kr
+      { push [peek [stack_pop16 $src]] }
+      STA - STA2 - STAr - STA2r - STAk - STA2k - STAkr - STA2kr
+      { poke [stack_pop16 $src] [pop] }
+      DEI - DEI2 - DEIr - DEI2r - DEIk - DEI2k - DEIkr - DEI2kr
+      { push [device_peek [stack_pop8 $src]] }
+      DEO - DEO2 - DEOr - DEO2r - DEOk - DEO2k - DEOkr - DEO2kr
+      { device_poke [stack_pop8 $src] [pop] }
+      # Arithmetic:
+      ADD - ADD2 - ADDr - ADD2r - ADDk - ADD2k - ADDkr - ADD2kr
+      { set a [pop]; set b [pop]; push [expr $b + $a] }
+      SUB - SUB2 - SUBr - SUB2r - SUBk - SUB2k - SUBkr - SUB2kr
+      { set a [pop]; set b [pop]; push [expr $b - $a] }
+      MUL - MUL2 - MULr - MUL2r - MULk - MUL2k - MULkr - MUL2kr
+      { set a [pop]; set b [pop]; push [expr $b - $a] }
+      DIV - DIV2 - DIVr - DIV2r - DIVk - DIV2k - DIVkr - DIV2kr
+      { set a [pop]; set b [pop]; if {!$a} { return halt 3 }; push [expr $b / $a] }
+      AND - AND2 - ANDr - AND2r - ANDk - AND2k - ANDkr - AND2kr
+      { set a [pop]; set b [pop]; push [expr $b & $a] }
+      ORA - ORA2 - ORAr - ORA2r - ORAk - ORA2k - ORAkr - ORA2kr
+      { set a [pop]; set b [pop]; push [expr $b | $a] }
+      EOR - EOR2 - EORr - EOR2r - EORk - EOR2k - EORkr - EOR2kr
+      { set a [pop]; set b [pop]; push [expr $b ^ $a] }
+      SFT - SFT2 - SFTr - SFT2r - SFTk - SFT2k - SFTkr - SFT2kr
+      { set a [stack_pop8 $src]; set b [pop]; push [expr $b >> ($a & 0x0f) << (($a & 0xf0) >> 4)] }
     }
   }
 }

@@ -1,0 +1,20 @@
+( Single Opcode Tester )
+
+%EMIT { #18 DEO }
+%TEST-SHORT { EQU2 #30 ADD EMIT }
+%TEST-BYTE { EQU #30 ADD EMIT }
+%MODE { #20 EMIT }
+%OPCODE { #0a EMIT }
+%TYPE { OPCODE OPCODE }
+
+|0000
+
+  @zeropage 
+    &byte $1 &short $2
+
+|0100
+
+  #f8 #f8 EQUk ADD ADD [ #f1 ] TEST-BYTE
+  MODE
+
+BRK
