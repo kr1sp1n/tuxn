@@ -1,8 +1,6 @@
 package require Tcl 8.5
 package provide uxn 1.0
 
-# puts [::tcl::unsupported::representation $ram]
-
 namespace eval ::uxn {
   # Export all:
   namespace export *
@@ -32,13 +30,13 @@ namespace eval ::uxn {
   variable opcode
 
   # Short mode:
-  variable mode_2
+  variable mode_2 0
 
   # Return mode:
-  variable mode_r
+  variable mode_r 0
 
   # Keep mode:
-  variable mode_k
+  variable mode_k 0
 
   # Current source stack:
   variable src
@@ -126,6 +124,7 @@ proc ::uxn::log {message} {
 # Create a new stack:
 proc ::uxn::stack_create {name offset} {
   variable stack_offsets
+  variable stack_pks
   set stack_offsets($name) $offset
   set stack_pks($name) 0
   log "stack $name: $offset - [expr $offset + 255]"
@@ -149,9 +148,20 @@ proc ::uxn::stack_peek {name index} {
   return [lindex $ram [expr [stack_offset $name] + $index]]
 }
 
+proc ::uxn::stack_poke8 {name index val} {
+  variable ram
+  set addr [expr [stack_offset $name] + $index]
+  lset ram $addr $val
+}
+
 # Get content of stack ptr:
 proc ::uxn::stack_ptr {name} {
-  return [stack_peek $name 0xff]
+  return [stack_peek $name [expr 0xff]]
+}
+
+# Set content of stack ptr:
+proc ::uxn::stack_ptr_set {name val} {
+  stack_poke8 $name [expr 0xff] $val
 }
 
 # Set content of stack pk:
@@ -161,10 +171,9 @@ proc ::uxn::stack_pk_set {name val} {
 }
 
 proc ::uxn::stack_inc {name} {
-  set old_count [stack_count $name]
+  set old_count [stack_ptr $name]
   set new_count [expr $old_count + 1]
-  set addr [stack_counter_addr $name]
-  poke8 $addr $new_count
+  stack_ptr_set $name $new_count
   return $old_count
 }
 
@@ -175,25 +184,22 @@ proc ::uxn::stack_dec {name} {
     set new_pk [expr $old_pk - 1]
     stack_pk_set $name $new_pk
     return $new_pk
-    # TODO:
-    # --this.pk
   } else {
-    set old_count [stack_count $name]
+    set old_count [stack_ptr $name]
     set new_count [expr $old_count - 1]
-    set addr [stack_counter_addr $name]
-    poke8 $addr $new_count
+    stack_ptr_set $name $new_count
     return $new_count
   }
 }
 
 proc ::uxn::stack_push8 {name val} {
-  set counter [stack_count $name]
+  set counter [stack_ptr $name]
   if { $counter == 0xff } {
     return halt 2
   }
   set offset [stack_offset $name]
   set addr [expr $offset + [stack_inc $name]]
-  poke8 $addr $val
+  poke8 $addr [expr $val & 0xff]
 }
 
 proc ::uxn::stack_push16 {name val} {
@@ -203,12 +209,15 @@ proc ::uxn::stack_push16 {name val} {
 
 proc ::uxn::stack_pop8 {name} {
   variable ram
+  variable opcode
   set offset [stack_offset $name]
   if {[stack_ptr $name] == 0x00} {
     halt 1
   } else {
     set dec [stack_dec $name]
-    set val [lindex $ram [expr $offset + $dec]]
+    set index [expr $offset + $dec]
+    set name [opcode_name $opcode]
+    set val [lindex $ram $index]
     return $val
   }
 }
@@ -222,17 +231,14 @@ proc ::uxn::stack_counter_addr {name} {
   return [expr $offset + 0xff]
 }
 
-proc ::uxn::stack_count {name} {
-  set addr [stack_counter_addr $name]
-  return [peek8 $addr]
-}
-
 # Show stack (for debugging):
 proc ::uxn::stack_show {name} {
   variable ram
-  set offset [stack_offset $name]
-  for {set i $offset} {$i < [expr $offset + 256]} {incr i} {
-    puts "$i: [lindex $ram $i]"
+  set ptr [stack_ptr $name]
+  for {set i 0} {$i < 5} {incr i} {
+    set val [stack_peek $name $i]
+    if {[expr $i == $ptr]} { set val "\[$val\]" }
+    puts -nonewline "$val "
   }
 }
 
@@ -298,6 +304,7 @@ proc ::uxn::halt {err} {
   # else
   #   emu.console.error_el.innerHTML = "<b>Error</b>: " + (this.mode_r ? "Return-stack" : "Working-stack") + " " + this.errors[err] + "."
   # this.pc = 0x0000
+  puts "HALT $err"
 }
 
 # Returns name of opcode:
@@ -409,7 +416,8 @@ proc ::uxn::peek { addr } {
 
 proc ::uxn::poke8 {addr val} {
   variable ram
-  lset ram $addr $val
+  lset ram $addr [expr $val & 0xff]
+
 }
 
 proc ::uxn::poke16 {addr val} {
@@ -497,12 +505,13 @@ proc ::uxn::eval { pc } {
 
   # $device[0x0f] ??
 
-  if { !$pc } {
+  if { !$pc || [device_peek [expr 0x0f]] } {
     return 0
   }
   
   while { 1 } {
     set opcode [peek8 $pc]
+    set name [ opcode_name $opcode ]
     incr pc
 
     # Set modes:
@@ -523,23 +532,25 @@ proc ::uxn::eval { pc } {
       set dst rst
     }
 
-    set name [ opcode_name $opcode ]
     log "0x[format %02x $opcode] 0b[format %08b $opcode] [format %d $opcode] $name"
 
     switch $name {
       # Literals/Calls:
       BRK { return 1 }
-      JCI { if { ![stack_pop8 $src] } { set pc [move 2 $pc] } }
+      JCI {
+        if { ![stack_pop8 $src] } {
+          set pc [move 2 $pc]
+        } else {
+          set pc [move [expr [peek16 $pc] + 2] $pc]
+        }
+      }
       JMI { set pc [move [expr [peek16 $pc] + 2] $pc] }
       JSI { stack_push16 rst [expr $pc + 2]; set pc [move [expr [peek16 $pc] + 2] $pc] }
       LIT - LIT2 - LITr - LIT2r - LITk - LIT2k - LITkr - LIT2kr
-      { 
-        puts [peek $pc]
-        push [peek $pc]; set pc [move [expr !!$mode_2 + 1] $pc]
-      }
+      { push [peek $pc]; set pc [move [expr !!$mode_2 + 1] $pc] }
       # Stack:
       INC - INC2 - INCr - INC2r - INCk - INC2k - INCkr - INC2kr
-       { push [expr [pop] + 1] }
+      { push [expr [pop] + 1] }
       POP - POP2 - POPr - POP2r - POPk - POP2k - POPkr - POP2kr
       { pop }
       NIP - NIP2 - NIPr - NIP2r - NIPk - NIP2k - NIPkr - NIP2kr
@@ -592,7 +603,7 @@ proc ::uxn::eval { pc } {
       SUB - SUB2 - SUBr - SUB2r - SUBk - SUB2k - SUBkr - SUB2kr
       { set a [pop]; set b [pop]; push [expr $b - $a] }
       MUL - MUL2 - MULr - MUL2r - MULk - MUL2k - MULkr - MUL2kr
-      { set a [pop]; set b [pop]; push [expr $b - $a] }
+      { set a [pop]; set b [pop]; push [expr $b * $a] }
       DIV - DIV2 - DIVr - DIV2r - DIVk - DIV2k - DIVkr - DIV2kr
       { set a [pop]; set b [pop]; if {!$a} { return halt 3 }; push [expr $b / $a] }
       AND - AND2 - ANDr - AND2r - ANDk - AND2k - ANDkr - AND2kr
@@ -604,5 +615,6 @@ proc ::uxn::eval { pc } {
       SFT - SFT2 - SFTr - SFT2r - SFTk - SFT2k - SFTkr - SFT2kr
       { set a [stack_pop8 $src]; set b [pop]; push [expr $b >> ($a & 0x0f) << (($a & 0xf0) >> 4)] }
     }
+    # puts [stack_show wst]
   }
 }

@@ -12,7 +12,7 @@ if { $argc < 1 || $romfile == "--help"} {
   puts "usage: tclkit $argv0 file.rom \[args...\]"
 } else {
 
-  uxn set_debug 1
+  # uxn set_debug 1
   uxn init
   screen init
   system init

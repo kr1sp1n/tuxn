@@ -1,5 +1,4 @@
 package provide screen 1.0
-
 package require Tk 8.6
 
 namespace eval ::screen {
@@ -13,11 +12,13 @@ namespace eval ::screen {
 
   # Background layer:
   variable bg [image create photo -width $width -height $height]
+
   # Foreground layer:
   variable fg [image create photo -width $width -height $height]
 
   variable canvas [canvas .canvas]
-  
+  $canvas configure -borderwidth 0 -highlightthickness 0 -width $width -height $height
+
   # Scale pixels:
   variable pixel_size 1
 
@@ -50,14 +51,15 @@ proc ::screen::init {} {
   uxn watch .Screen/pixel { {x y fg color} { ::screen::pixel $x $y $fg $color } }
   uxn watch .Screen/sprite { {auto x y addr val} { ::screen::sprite $auto $x $y $addr $val } }
 
-  # grid [tk::canvas .canvas] -sticky nwes -column 1 -row 0
   wm title . tuxn
-  wm resizable . 0 0
+  . configure -bg black
+
+  # wm resizable . 0 0
   window_set_size
   
-  $canvas configure -borderwidth 0 -highlightthickness 0 -width $width -height $height
-  $canvas create image 255 160 -image $bg
-  $canvas create image 255 160 -image $fg
+  $canvas create image 0 0 -anchor nw -image $bg
+  $canvas create image 0 0 -anchor nw -image $fg
+
   pack $canvas
 }
 

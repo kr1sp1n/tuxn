@@ -14,7 +14,9 @@
 
 |0100
 
-  #f8 #f8 EQUk ADD ADD [ #f1 ] TEST-BYTE
-  MODE
+  #1234 .zeropage/short STZ2 .zeropage/short LDZ2 [ #1234 ] TEST-SHORT
+
+  (#5678 .zeropage/short STZ2 .zeropage/short LDZ2 [ #5678 ] TEST-SHORT)
+  OPCODE
 
 BRK
